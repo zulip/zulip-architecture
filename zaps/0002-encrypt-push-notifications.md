@@ -109,6 +109,13 @@ bouncer (or Google/Apple's servers, for that matter).
    The server creates a `PushDevice` instance. It replies to the client with a
    success response, and asynchronously initiates the next step.
 
+   - On success response, the client initiates a timeout to check the `push_account_ids`
+     map provided in the [register-queue](https://zulip.com/api/register-queue)
+     response (see the [Miscellaneous](#miscellaneous) section for details), to
+     verify whether the asynchronous step has succedded. If the status remains
+     `"pending"`, the client displays a notice to inform the user that push
+     notifications are not yet set up.
+
    - Next step asynchronous: It ensures that the bouncer service 500ing will just
      cause queueing of those requests for the local server, the mobile client
      doesn’t need to deal with retries here. Handling of 500 is discussed below.
@@ -144,10 +151,7 @@ bouncer (or Google/Apple's servers, for that matter).
 
    **On error**:
    - If it's a liveness error, don't retry and forget the `push_account_id`.
-     Pass the error to the server admin. The user is notified about this
-     error on the client using the `push_account_ids` map provided in the
-     [register-queue](https://zulip.com/api/register-queue) response. (Refer
-     to the [Miscellaneous](#miscellaneous) section for more details.)
+     The error is logged on the server and is also sent via email to the admin.
 
    - Otherwise, the server keeps retrying for `PUSH_REGISTRATION_LIVENESS_TIMEOUT` seconds.
 
@@ -202,8 +206,9 @@ bouncer (or Google/Apple's servers, for that matter).
   - This allows the client to determine if the `push_account_id` it has
     locally for the account is missing on the `push_account_ids` map.
     If missing, it knows it needs to reregister the push device.
-    This data helps the client to show an error to the user in
-    case of a liveness error.
+    This data helps the client to show a notice to the user if
+    the server continues to retry the registration with the bouncer
+    (for `PUSH_REGISTRATION_LIVENESS_TIMEOUT` seconds).
 
   - The status would be useful for a troubleshooting UI.
 
