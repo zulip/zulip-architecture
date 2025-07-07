@@ -50,7 +50,7 @@ benefit from a formalize design process, after preliminary discussion in our
 may choose to open a Zulip architecture proposal (ZAP).
 
 A ZAP is a pull request in this `zulip-architecture` repository that adds a
-Markdown document named like `text/0000-my-feature.md`. The numerical ID should
+Markdown document named like `zaps/0000-my-feature.md`. The numerical ID should
 be initialized with the placeholder `0000`, and replaced with the pull request
 number after the pull request is opened.
 
