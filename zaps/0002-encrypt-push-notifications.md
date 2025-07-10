@@ -125,7 +125,10 @@ class Account:
 ```
 
 The client is responsible for ensuring that these secrets are stored
-as securely as possible, including excluding them from device backups.
+as securely as possible, including excluding the entire Account table
+from device backups. In addition to the security motivation for doing
+so, the server relies on there being no duplicate `(user_id,
+push_account_id)` pairs.
 
 After a backup/restore process, clients should just register a new
 token and key.
@@ -382,7 +385,7 @@ Some steps may happen repeatedly due to retries, as detailed below.
 
    Initiate a timeout to check the `push_account_ids`
    map provided in the [register-queue](https://zulip.com/api/register-queue)
-   response (see the [Miscellaneous](#miscellaneous) section for details), to
+   response (see the [In register-queue](in-register-queue) section for details), to
    verify whether the asynchronous step has succeeded. If the status remains
    `"pending"`, the client displays a notice to inform the user that push
    notifications are not yet set up.
@@ -395,7 +398,7 @@ Some steps may happen repeatedly due to retries, as detailed below.
 
    1. Use `bouncer_public_key` to look up the corresponding
       `private_key` in `push_registration_encryption_keys` map.  If
-      not found, fail with an `invalid_bouncer_public_key` error code.
+      not found, fail with an `INVALID_BOUNCER_PUBLIC_KEY` error code.
 
    1. Decrypt the given `encrypted_push_registration` with the
       resulting `private_key`, to produce `push_registration`.
@@ -438,44 +441,34 @@ Some steps may happen repeatedly due to retries, as detailed below.
      The client is now successfully registered and ready to receive
      notifications.
 
-   * On `invalid_bouncer_public_key` error:
+   * On `INVALID_BOUNCER_PUBLIC_KEY` error:
 
      Delete the `PushDevice` record.
 
-     Include an additional `reason` field with the value
-     `"invalid_bouncer_public_key"` in the event sent to remove the
-     `push_account_id` from the `push_account_ids` map (see the
-     [Miscellaneous](#miscellaneous) section).  The client uses the
-     `reason` field to inform the user that they need to update the
-     app to continue using push notifications.
+     Use `"INVALID_BOUNCER_PUBLIC_KEY"` as the `error_code` in the
+     event sent to remove the `push_account_id` from the
+     `push_account_ids` map (see the [In
+     register-queue](in-register-queue) section). The client uses this
+     `error_code` to inform the user that they need to update the app
+     to continue using push notifications.
 
    * On error due to a stale request:
 
      Delete the `PushDevice` record.
 
-     This error often indicates a long-lasting outage somewhere
-     between the server and the bouncer, most likely in either the
-     server or its local network configuration.
+     This error indicates a long-lasting outage somewhere between the
+     server and the bouncer, most likely in either the server or its
+     local network configuration.
 
      Report the error to the server admins in the same way as other
      errors indicating an operational issue, for example in the server
      log and by email.
 
-     Additionally, an additional `reason` field with the value
-     `"request_expired"` in the event sent to remove the
-     `push_account_id` from the `push_account_ids` map (see the
-     [Miscellaneous](#miscellaneous) section).  The client may use the
-     `reason` field to know it needs to try again, but this is not
-     required, since the .
-
-     - If the request gets replayed, this could result in a working
-       `PushDevice` being deleted. This failure mode is plausible in
-       case of restoring a backup taken while the request was in
-       flight. It is unclear whether to expect the restored backup can
-       successfully deliver mobile notifications.
-
-       TBD: Consider whether to check whether we already have a valid
-       registration before processing the deletion here.
+     User `"REQUEST_EXPIRED"` as the `error_code` in the event sent to
+     remove the `push_account_id` from the `push_account_ids` map (see
+     the [In register-queue](in-register-queue) section). The client
+     uses this `error_code` to know it should attempt registration
+     again.
 
    * On other errors, including 5xx errors and network errors:
 
@@ -486,7 +479,7 @@ Some steps may happen repeatedly due to retries, as detailed below.
      Since the server does not have `timestamp`, it cannot check if
      the request is already past the
      `PUSH_REGISTRATION_LIVENESS_TIMEOUT` threshold and therefore
-     stale. It is thus reliant on the server to reject such requests.
+     stale. It is thus reliant on the bouncer to reject such requests.
 
    (Forgetting the `PushDevice` record will cause the client to retry
    the operation from scratch, if the client is still in use.
@@ -494,6 +487,34 @@ Some steps may happen repeatedly due to retries, as detailed below.
    sending the server admin error messages about it — appropriately so
    — but we don’t accumulate ghost clients.)
 
+   - If a request gets replayed at least
+     `PUSH_REGISTRATION_LIVENESS_TIMEOUT` after the original request
+     succeeds, this could in theory result in a working `PushDevice`
+     being deleted by the `"REQUEST_EXPIRED"` handler. It's the
+     responsibility of the server implementation and network layer to
+     avoid faults that could have this failure mode.
+
+     There is a known plausible scenario for a replayed request: An
+     unlikely race starting with a server backup taken for the purpose
+     of testing a Zulip server upgrade while the request was in a
+     queue:
+
+       1. The original server successfully completes the registration
+          and continues running normally.
+
+       1. The backup is restored on a duplicate server at least
+          `PUSH_REGISTRATION_LIVENESS_TIMEOUT` after being taken, and
+          notably, the original request is restored as part of this
+          process.
+
+       1. The duplicate server would send the request from its queue,
+          getting this error and deleting its `PushDevice` record due
+          to the stale request error.
+
+       1. However, the bouncer and original server continue running
+          normally.
+
+       Thus, that unlikely race would not lead to a fault.
 
 ### In register-queue
 
@@ -501,18 +522,19 @@ In the data which the server sends the client in the
 [register-queue](https://zulip.com/api/register-queue) response,
 and keeps updated via events, we add the following:
 
-* `push_account_ids`, a JSON object,
-  with one entry for each of the user's `PushDevice` records.
+* `push_account_ids`, a JSON object, with one entry for each of the
+  user's `PushDevice` records.
 
   * The key is `PushDevice.push_account_id`.
 
-  * The value is either `"active"` or `"pending"`,
-    representing the status of the device's registration.
+  * The value is an object with the following fields:
+    - `status`: `"active"`, `"pending"`, or `"failed"`, representing
+      the status of the device's registration.
 
-    The status is pending if `PushDevice.bouncer_device_id` is null,
-    and active otherwise.
-
-    TODO This value is now an object.
+      The status is pending if `PushDevice.bouncer_device_id` is null,
+      and active otherwise.
+    - `error_code`: If the status if `"failed"`, the error code
+      indicating the cause of the failure.
 
 The client should look up in this map the `push_account_id` value from
 the corresponding `Account` record.  It uses the result in two ways:
@@ -536,10 +558,6 @@ the corresponding `Account` record.  It uses the result in two ways:
     temporary outage somewhere in the chain, and the user may be
     surprised that push notifications aren't working for them. The
     client might show a warning banner to the user in this case.
-
-  * These data structures should be appropriately linked to future
-    data structures allowing lists of clients and deleting an
-    `api_key`.
 
 ### Expired tokens
 
@@ -572,6 +590,13 @@ should:
 - Optionally try to tell the server to forget the old token.
   (Optional because we expect APNs/FCM to report the token to the
   bouncer as invalid in this case.).
+
+### Periodic repeat registrations
+
+The client should also repeat the registration procedure monthly as
+detailed in
+[#F322](https://github.com/zulip/zulip-flutter/issues/322), to support
+garbage-collection for clients that no longer exist.
 
 ## Background info
 
