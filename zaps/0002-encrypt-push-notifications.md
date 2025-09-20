@@ -95,6 +95,47 @@ and so will not cause older servers to send it notifications.
 Eventually, we will remove support for the old protocol, at which
 point these settings will be removed.
 
+
+## Cryptographic choices
+
+Notifications are sent with authenticated encryption, meaning
+the cryptography provides confidentiality (the data cannot be read
+by parties lacking the appropriate secret key) and also
+authenticity (the message cannot be forged or altered by a party
+lacking the appropriate secret key).
+
+Notifications are encrypted with symmetric cryptography, using a
+secret key shared by an individual client (the Zulip app on a
+given user device) and a Zulip server.
+Specifically, the server encrypts them using libsodium's
+`crypto_secretbox_easy` ([doc][libsodium-secretbox];
+[NaCl doc][nacl-secretbox]), which uses XSalsa20 and Poly1305
+to provide authenticated encryption.
+This calls for a 192-bit nonce, which the server chooses randomly
+on each occasion.
+
+In the Python-like pseudocode types below, `SymmetricKey` refers
+to a key used for this cryptosystem, 32 bytes in length.
+
+When registering to receive notifications (as detailed
+[below](#register)), the client encrypts certain data
+to be read only by the bouncer.
+This encryption is done with asymmetric cryptography, using
+a public key which belongs to the bouncer
+(called `bouncer_public_key` below) and is baked into the client app.
+Specifically, the client encrypts this data using libsodium's
+`crypto_box_seal` ([doc][libsodium-box]; [NaCl doc][nacl-box]),
+which uses Curve25519, XSalsa20, and Poly1305.
+
+In the Python-like pseudocode types below, `PublicKey` refers to a
+public key used for this cryptosystem, 32 bytes in length.
+
+[libsodium-secretbox]: https://libsodium.gitbook.io/doc/secret-key_cryptography/secretbox
+[nacl-secretbox]: https://nacl.cr.yp.to/secretbox.html
+[libsodium-box]: https://libsodium.gitbook.io/doc/public-key_cryptography/sealed_boxes
+[nacl-box]: https://nacl.cr.yp.to/box.html
+
+
 ## Data structures
 
 Once a given client has logged into a server and the setup phase of
@@ -303,6 +344,9 @@ The steps are:
    1. Use `Account.push_key` to decrypt `encrypted_content`.
 
    1. Process the resulting plaintext as a notification.
+
+
+<div id="register" />
 
 ### Registering a client device
 
